@@ -1054,7 +1054,7 @@ class Schema(metaclass=SchemaMeta):
             unknown_groups = self.groups - set(field_groups.keys())
             if unknown_groups:
                 raise ValueError(
-                    f"Unknown field group(s) {unknown_groups!r} for {self}."
+                    f"Unknown field group(s): {list(unknown_groups)!r}"
                 )
             group_fields = self.set_class()
             for group_name in self.groups:
