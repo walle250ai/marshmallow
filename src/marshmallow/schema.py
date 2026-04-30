@@ -127,6 +127,19 @@ class SchemaMeta(ABCMeta):
             inherited_fields=inherited_fields,
             dict_cls=dict,
         )
+
+        # Validate field_groups references existing fields
+        field_groups = klass.opts.field_groups
+        if field_groups:
+            all_field_names = set(klass._declared_fields.keys())
+            for group_name, field_names in field_groups.items():
+                invalid_fields = [f for f in field_names if f not in all_field_names]
+                if invalid_fields:
+                    raise ValueError(
+                        f"Field(s) {invalid_fields!r} in field group {group_name!r} "
+                        f"do not exist in schema {klass.__name__!r}."
+                    )
+
         return klass
 
     @classmethod
@@ -220,6 +233,9 @@ class SchemaOpts:
         self.unknown = getattr(meta, "unknown", RAISE)
         self.register = getattr(meta, "register", True)
         self.many = getattr(meta, "many", False)
+        self.field_groups = getattr(meta, "field_groups", {})
+        if not isinstance(self.field_groups, dict):
+            raise ValueError("`field_groups` option must be a dictionary.")
 
 
 class Schema(metaclass=SchemaMeta):
@@ -404,6 +420,10 @@ class Schema(metaclass=SchemaMeta):
         by class name in `Nested` fields. Only set this to `False` when memory
         usage is critical. Defaults to `True`.
         """
+        field_groups: typing.ClassVar[dict[str, list[str]]]
+        """Dictionary mapping group names to lists of field names.
+        Used to group fields for selective serialization/deserialization.
+        """
 
     def __init__(
         self,
@@ -415,12 +435,15 @@ class Schema(metaclass=SchemaMeta):
         dump_only: types.StrSequenceOrSet = (),
         partial: bool | types.StrSequenceOrSet | None = None,
         unknown: types.UnknownOption | None = None,
+        groups: types.StrSequenceOrSet | None = None,
     ):
         # Raise error if only or exclude is passed as string, not list of strings
         if only is not None and not is_collection(only):
             raise StringNotCollectionError('"only" should be a list of strings')
         if not is_collection(exclude):
             raise StringNotCollectionError('"exclude" should be a list of strings')
+        if groups is not None and not is_collection(groups):
+            raise StringNotCollectionError('"groups" should be a list of strings')
         # copy declared fields from metaclass
         self.declared_fields = copy.deepcopy(self._declared_fields)
         self.many = self.opts.many if many is None else many
@@ -434,6 +457,7 @@ class Schema(metaclass=SchemaMeta):
         self.unknown: types.UnknownOption = (
             self.opts.unknown if unknown is None else unknown
         )
+        self.groups = set(groups) if groups else None
         self._normalize_nested_options()
         #: Dictionary mapping field_names -> :class:`Field` objects
         self.fields: dict[str, Field] = {}
@@ -545,13 +569,15 @@ class Schema(metaclass=SchemaMeta):
             ret[key] = value
         return ret
 
-    def dump(self, obj: typing.Any, *, many: bool | None = None):
+    def dump(self, obj: typing.Any, *, many: bool | None = None, groups: types.StrSequenceOrSet | None = None):
         """Serialize an object to native Python data types according to this
         Schema's fields.
 
         :param obj: The object to serialize.
         :param many: Whether to serialize `obj` as a collection. If `None`, the value
             for `self.many` is used.
+        :param groups: List of field groups to include. Only fields in these groups
+            will be serialized.
         :return: Serialized data
 
         .. versionchanged:: 3.0.0b7
@@ -561,6 +587,19 @@ class Schema(metaclass=SchemaMeta):
         .. versionchanged:: 3.0.0rc9
             Validation no longer occurs upon serialization.
         """
+        if groups:
+            schema = self.__class__(
+                only=self.only,
+                exclude=self.exclude,
+                many=many if many is not None else self.many,
+                load_only=self.load_only,
+                dump_only=self.dump_only,
+                partial=self.partial,
+                unknown=self.unknown,
+                groups=groups,
+            )
+            return schema.dump(obj, many=many)
+
         many = self.many if many is None else bool(many)
         if self._hooks[PRE_DUMP]:
             processed_obj = self._invoke_dump_processors(
@@ -578,12 +617,14 @@ class Schema(metaclass=SchemaMeta):
 
         return result
 
-    def dumps(self, obj: typing.Any, *args, many: bool | None = None, **kwargs):
+    def dumps(self, obj: typing.Any, *args, many: bool | None = None, groups: types.StrSequenceOrSet | None = None, **kwargs):
         """Same as :meth:`dump`, except return a JSON-encoded string.
 
         :param obj: The object to serialize.
         :param many: Whether to serialize `obj` as a collection. If `None`, the value
             for `self.many` is used.
+        :param groups: List of field groups to include. Only fields in these groups
+            will be serialized.
         :return: A ``json`` string
 
         .. versionchanged:: 3.0.0b7
@@ -591,7 +632,7 @@ class Schema(metaclass=SchemaMeta):
             A :exc:`ValidationError <marshmallow.exceptions.ValidationError>` is raised
             if ``obj`` is invalid.
         """
-        serialized = self.dump(obj, many=many)
+        serialized = self.dump(obj, many=many, groups=groups)
         return self.opts.render_module.dumps(serialized, *args, **kwargs)
 
     def _deserialize(
@@ -712,6 +753,7 @@ class Schema(metaclass=SchemaMeta):
         many: bool | None = None,
         partial: bool | types.StrSequenceOrSet | None = None,
         unknown: types.UnknownOption | None = None,
+        groups: types.StrSequenceOrSet | None = None,
     ):
         """Deserialize a data structure to an object defined by this Schema's fields.
 
@@ -725,6 +767,8 @@ class Schema(metaclass=SchemaMeta):
         :param unknown: Whether to exclude, include, or raise an error for unknown
             fields in the data. Use `EXCLUDE`, `INCLUDE` or `RAISE`.
             If `None`, the value for `self.unknown` is used.
+        :param groups: List of field groups to include. Only fields in these groups
+            will be deserialized.
         :return: Deserialized data
 
         .. versionchanged:: 3.0.0b7
@@ -732,6 +776,19 @@ class Schema(metaclass=SchemaMeta):
             A :exc:`ValidationError <marshmallow.exceptions.ValidationError>` is raised
             if invalid data are passed.
         """
+        if groups:
+            schema = self.__class__(
+                only=self.only,
+                exclude=self.exclude,
+                many=many if many is not None else self.many,
+                load_only=self.load_only,
+                dump_only=self.dump_only,
+                partial=partial if partial is not None else self.partial,
+                unknown=unknown if unknown is not None else self.unknown,
+                groups=groups,
+            )
+            return schema.load(data, many=many, partial=partial, unknown=unknown)
+
         return self._do_load(
             data, many=many, partial=partial, unknown=unknown, postprocess=True
         )
@@ -744,6 +801,7 @@ class Schema(metaclass=SchemaMeta):
         many: bool | None = None,
         partial: bool | types.StrSequenceOrSet | None = None,
         unknown: types.UnknownOption | None = None,
+        groups: types.StrSequenceOrSet | None = None,
         **kwargs,
     ):
         """Same as :meth:`load`, except it uses `marshmallow.Schema.Meta.render_module` to deserialize
@@ -759,6 +817,8 @@ class Schema(metaclass=SchemaMeta):
         :param unknown: Whether to exclude, include, or raise an error for unknown
             fields in the data. Use `EXCLUDE`, `INCLUDE` or `RAISE`.
             If `None`, the value for `self.unknown` is used.
+        :param groups: List of field groups to include. Only fields in these groups
+            will be deserialized.
         :return: Deserialized data
 
         .. versionchanged:: 3.0.0b7
@@ -769,7 +829,7 @@ class Schema(metaclass=SchemaMeta):
             Rename ``json_module`` parameter to ``s``.
         """
         data = self.opts.render_module.loads(s, **kwargs)
-        return self.load(data, many=many, partial=partial, unknown=unknown)
+        return self.load(data, many=many, partial=partial, unknown=unknown, groups=groups)
 
     def _run_validator(
         self,
@@ -989,20 +1049,27 @@ class Schema(metaclass=SchemaMeta):
         else:
             available_field_names = self.set_class(self.declared_fields.keys())
 
+        if self.groups:
+            field_groups = self.opts.field_groups
+            unknown_groups = self.groups - set(field_groups.keys())
+            if unknown_groups:
+                raise ValueError(
+                    f"Unknown field group(s) {unknown_groups!r} for {self}."
+                )
+            group_fields = self.set_class()
+            for group_name in self.groups:
+                group_fields |= self.set_class(field_groups[group_name])
+            available_field_names = group_fields
+
         invalid_fields = self.set_class()
 
         if self.only is not None:
-            # Return only fields specified in only option
             field_names: typing.AbstractSet[typing.Any] = self.set_class(self.only)
-
             invalid_fields |= field_names - available_field_names
         else:
             field_names = available_field_names
 
-        # If "exclude" option or param is specified, remove those fields.
         if self.exclude:
-            # Note that this isn't available_field_names, since we want to
-            # apply "only" for the actual calculation.
             field_names = field_names - self.exclude
             invalid_fields |= self.exclude - available_field_names
 
