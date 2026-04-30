@@ -569,7 +569,15 @@ class Schema(metaclass=SchemaMeta):
             ret[key] = value
         return ret
 
-    def dump(self, obj: typing.Any, *, many: bool | None = None, groups: types.StrSequenceOrSet | None = None):
+    def dump(
+        self,
+        obj: typing.Any,
+        *,
+        many: bool | None = None,
+        groups: types.StrSequenceOrSet | None = None,
+        only: types.StrSequenceOrSet | None = None,
+        exclude: types.StrSequenceOrSet = (),
+    ):
         """Serialize an object to native Python data types according to this
         Schema's fields.
 
@@ -578,6 +586,8 @@ class Schema(metaclass=SchemaMeta):
             for `self.many` is used.
         :param groups: List of field groups to include. Only fields in these groups
             will be serialized.
+        :param only: Whitelist of the declared fields to select. If None, all fields are used.
+        :param exclude: Blacklist of the declared fields to exclude.
         :return: Serialized data
 
         .. versionchanged:: 3.0.0b7
@@ -587,10 +597,20 @@ class Schema(metaclass=SchemaMeta):
         .. versionchanged:: 3.0.0rc9
             Validation no longer occurs upon serialization.
         """
-        if groups:
+        if groups or only or exclude:
+            if only is not None:
+                if self.only is not None:
+                    effective_only = list(set(self.only) & set(only))
+                else:
+                    effective_only = list(only)
+            else:
+                effective_only = self.only
+
+            effective_exclude = set(self.exclude) | set(exclude)
+
             schema = self.__class__(
-                only=self.only,
-                exclude=self.exclude,
+                only=effective_only,
+                exclude=list(effective_exclude),
                 many=many if many is not None else self.many,
                 load_only=self.load_only,
                 dump_only=self.dump_only,
@@ -617,7 +637,16 @@ class Schema(metaclass=SchemaMeta):
 
         return result
 
-    def dumps(self, obj: typing.Any, *args, many: bool | None = None, groups: types.StrSequenceOrSet | None = None, **kwargs):
+    def dumps(
+        self,
+        obj: typing.Any,
+        *args,
+        many: bool | None = None,
+        groups: types.StrSequenceOrSet | None = None,
+        only: types.StrSequenceOrSet | None = None,
+        exclude: types.StrSequenceOrSet = (),
+        **kwargs,
+    ):
         """Same as :meth:`dump`, except return a JSON-encoded string.
 
         :param obj: The object to serialize.
@@ -625,6 +654,8 @@ class Schema(metaclass=SchemaMeta):
             for `self.many` is used.
         :param groups: List of field groups to include. Only fields in these groups
             will be serialized.
+        :param only: Whitelist of the declared fields to select. If None, all fields are used.
+        :param exclude: Blacklist of the declared fields to exclude.
         :return: A ``json`` string
 
         .. versionchanged:: 3.0.0b7
@@ -632,7 +663,7 @@ class Schema(metaclass=SchemaMeta):
             A :exc:`ValidationError <marshmallow.exceptions.ValidationError>` is raised
             if ``obj`` is invalid.
         """
-        serialized = self.dump(obj, many=many, groups=groups)
+        serialized = self.dump(obj, many=many, groups=groups, only=only, exclude=exclude)
         return self.opts.render_module.dumps(serialized, *args, **kwargs)
 
     def _deserialize(
@@ -754,6 +785,8 @@ class Schema(metaclass=SchemaMeta):
         partial: bool | types.StrSequenceOrSet | None = None,
         unknown: types.UnknownOption | None = None,
         groups: types.StrSequenceOrSet | None = None,
+        only: types.StrSequenceOrSet | None = None,
+        exclude: types.StrSequenceOrSet = (),
     ):
         """Deserialize a data structure to an object defined by this Schema's fields.
 
@@ -769,6 +802,8 @@ class Schema(metaclass=SchemaMeta):
             If `None`, the value for `self.unknown` is used.
         :param groups: List of field groups to include. Only fields in these groups
             will be deserialized.
+        :param only: Whitelist of the declared fields to select. If None, all fields are used.
+        :param exclude: Blacklist of the declared fields to exclude.
         :return: Deserialized data
 
         .. versionchanged:: 3.0.0b7
@@ -776,10 +811,20 @@ class Schema(metaclass=SchemaMeta):
             A :exc:`ValidationError <marshmallow.exceptions.ValidationError>` is raised
             if invalid data are passed.
         """
-        if groups:
+        if groups or only or exclude:
+            if only is not None:
+                if self.only is not None:
+                    effective_only = list(set(self.only) & set(only))
+                else:
+                    effective_only = list(only)
+            else:
+                effective_only = self.only
+
+            effective_exclude = set(self.exclude) | set(exclude)
+
             schema = self.__class__(
-                only=self.only,
-                exclude=self.exclude,
+                only=effective_only,
+                exclude=list(effective_exclude),
                 many=many if many is not None else self.many,
                 load_only=self.load_only,
                 dump_only=self.dump_only,
@@ -802,6 +847,8 @@ class Schema(metaclass=SchemaMeta):
         partial: bool | types.StrSequenceOrSet | None = None,
         unknown: types.UnknownOption | None = None,
         groups: types.StrSequenceOrSet | None = None,
+        only: types.StrSequenceOrSet | None = None,
+        exclude: types.StrSequenceOrSet = (),
         **kwargs,
     ):
         """Same as :meth:`load`, except it uses `marshmallow.Schema.Meta.render_module` to deserialize
@@ -819,6 +866,8 @@ class Schema(metaclass=SchemaMeta):
             If `None`, the value for `self.unknown` is used.
         :param groups: List of field groups to include. Only fields in these groups
             will be deserialized.
+        :param only: Whitelist of the declared fields to select. If None, all fields are used.
+        :param exclude: Blacklist of the declared fields to exclude.
         :return: Deserialized data
 
         .. versionchanged:: 3.0.0b7
@@ -829,7 +878,15 @@ class Schema(metaclass=SchemaMeta):
             Rename ``json_module`` parameter to ``s``.
         """
         data = self.opts.render_module.loads(s, **kwargs)
-        return self.load(data, many=many, partial=partial, unknown=unknown, groups=groups)
+        return self.load(
+            data,
+            many=many,
+            partial=partial,
+            unknown=unknown,
+            groups=groups,
+            only=only,
+            exclude=exclude,
+        )
 
     def _run_validator(
         self,
