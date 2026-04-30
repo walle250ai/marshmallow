@@ -140,3 +140,92 @@ def test_init_schema_with_groups():
 def test_init_schema_with_unknown_group():
     with pytest.raises(ValueError, match="Unknown field group"):
         UserSchema(groups=["unknown_group"])
+
+
+class AddressSchema(Schema):
+    street = fields.Str()
+    city = fields.Str()
+    zip_code = fields.Str()
+
+    class Meta:
+        field_groups = {
+            "public": ["city", "zip_code"],
+            "private": ["street"],
+        }
+
+
+class PersonSchema(Schema):
+    name = fields.Str()
+    address = fields.Nested(AddressSchema)
+
+    class Meta:
+        field_groups = {
+            "public": ["name", "address"],
+            "private": ["address"],
+        }
+
+
+def test_nested_schema_groups_propagation_dump():
+    schema = PersonSchema()
+    person = {
+        "name": "John",
+        "address": {"street": "123 Main St", "city": "Boston", "zip_code": "02108"},
+    }
+    result = schema.dump(person, groups=["public"])
+    assert "name" in result
+    assert "address" in result
+    assert "city" in result["address"]
+    assert "zip_code" in result["address"]
+    assert "street" not in result["address"]
+
+
+def test_nested_schema_groups_propagation_load():
+    schema = PersonSchema()
+    data = {
+        "name": "John",
+        "address": {"street": "123 Main St", "city": "Boston", "zip_code": "02108"},
+    }
+    result = schema.load(data, groups=["public"])
+    assert "name" in result
+    assert "address" in result
+    assert "city" in result["address"]
+    assert "zip_code" in result["address"]
+    assert "street" not in result["address"]
+
+
+def test_nested_schema_multiple_groups_propagation():
+    schema = PersonSchema()
+    person = {
+        "name": "John",
+        "address": {"street": "123 Main St", "city": "Boston", "zip_code": "02108"},
+    }
+    result = schema.dump(person, groups=["public", "private"])
+    assert "name" in result
+    assert "address" in result
+    assert "city" in result["address"]
+    assert "zip_code" in result["address"]
+    assert "street" in result["address"]
+
+
+def test_empty_groups_returns_empty_dict_dump():
+    schema = UserSchema()
+    user = {"name": "John", "email": "john@example.com", "password": "secret"}
+    result = schema.dump(user, groups=[])
+    assert result == {}
+
+
+def test_empty_groups_returns_empty_dict_load():
+    schema = UserSchema()
+    data = {"name": "John", "email": "john@example.com", "password": "secret"}
+    result = schema.load(data, groups=[])
+    assert result == {}
+
+
+def test_empty_groups_with_nested_schema():
+    schema = PersonSchema()
+    person = {
+        "name": "John",
+        "address": {"street": "123 Main St", "city": "Boston", "zip_code": "02108"},
+    }
+    result = schema.dump(person, groups=[])
+    assert result == {}

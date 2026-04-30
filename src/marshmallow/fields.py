@@ -621,12 +621,20 @@ class Nested(Field):
         ]
 
     def _serialize(self, nested_obj, attr, obj, **kwargs):
-        # Load up the schema first. This allows a RegistryError to be raised
-        # if an invalid schema name was passed
         schema = self.schema
         if nested_obj is None:
             return None
         many = schema.many or self.many
+        
+        nested_groups = None
+        if self.root is not None and getattr(self.root, "groups", None) is not None:
+            nested_field_groups = schema.opts.field_groups
+            if nested_field_groups:
+                common_groups = self.root.groups & set(nested_field_groups.keys())
+                nested_groups = list(common_groups)
+        
+        if nested_groups is not None:
+            return schema.dump(nested_obj, many=many, groups=nested_groups)
         return schema.dump(nested_obj, many=many)
 
     def _test_collection(self, value: typing.Any) -> None:
@@ -639,8 +647,21 @@ class Nested(Field):
         value: typing.Any,
         partial: bool | types.StrSequenceOrSet | None = None,  # noqa: FBT001
     ):
+        schema = self.schema
+        nested_groups = None
+        if self.root is not None and getattr(self.root, "groups", None) is not None:
+            nested_field_groups = schema.opts.field_groups
+            if nested_field_groups:
+                common_groups = self.root.groups & set(nested_field_groups.keys())
+                nested_groups = list(common_groups)
+        
         try:
-            valid_data = self.schema.load(value, unknown=self.unknown, partial=partial)
+            if nested_groups is not None:
+                valid_data = schema.load(
+                    value, unknown=self.unknown, partial=partial, groups=nested_groups
+                )
+            else:
+                valid_data = schema.load(value, unknown=self.unknown, partial=partial)
         except ValidationError as error:
             raise ValidationError(
                 error.messages, valid_data=error.valid_data
